@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>关系与用户画像</title>
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <main class="app">
+    <header class="page-header">
+      <div><p class="eyebrow">RELATIONSHIP & MEMORY</p><h1>关系与用户画像</h1><p class="subtitle">看看每段关系，正在怎样慢慢生长。</p></div>
+      <button id="refresh" class="button secondary" type="button">↻ 刷新数据</button>
+    </header>
+    <div id="status" class="status" role="status" aria-live="polite">正在连接 AstrBot…</div>
+    <section class="workspace" aria-label="用户关系管理">
+      <aside class="directory panel">
+        <div class="directory-header"><h2>用户档案 <span id="total" class="count">0</span></h2><span id="role-name" class="muted"></span></div>
+        <label class="sr-only" for="search">搜索QQ、昵称或标签</label>
+        <input id="search" type="search" placeholder="搜索QQ、昵称或标签" maxlength="100" autocomplete="off">
+        <label class="sr-only" for="group">筛选群聊</label>
+        <select id="group"><option value="">全部群聊</option></select>
+        <div id="user-list" class="user-list" aria-label="用户列表"><p class="empty compact">正在加载用户…</p></div>
+        <div class="pagination"><button id="previous" class="button small secondary" type="button" disabled>上一页</button><span id="page-info" class="muted">—</span><button id="next" class="button small secondary" type="button" disabled>下一页</button></div>
+      </aside>
+      <section id="detail" class="detail panel" aria-label="用户详情"><div class="empty"><span class="empty-symbol">✧</span><h2>每一段关系，都从一次交谈开始</h2><p>选择左侧用户，查看关系、标签和共同记忆。<br>还没有用户时，请先在启用的群里和机器人聊几句。</p></div></section>
+    </section>
+    <footer>关系值是变化的参考，标签是有依据、可修正的观察。此页仅供已登录的管理面板使用。</footer>
+  </main>
+  <dialog id="tag-dialog" aria-labelledby="tag-title">
+    <form id="tag-form">
+      <div class="dialog-heading"><h2 id="tag-title">添加用户标签</h2><button id="close-tag" class="icon-button" type="button" aria-label="关闭">×</button></div>
+      <label for="tag-name">标签名称</label><input id="tag-name" maxlength="24" placeholder="例如：喜欢科幻、偏好简短回答" required>
+      <label for="tag-category">分类</label><select id="tag-category"><option value="interest">兴趣爱好</option><option value="preference">生活偏好</option><option value="communication">沟通习惯</option><option value="boundary">相处边界</option><option value="impression">互动印象</option></select>
+      <label class="checkbox"><input id="tag-public" type="checkbox">允许在群聊回复中参考这个标签</label>
+      <p id="tag-evidence" class="evidence"></p><p class="muted">人工维护的标签不会被模型自动覆盖。修改名称请先移除旧标签，再添加新标签。</p>
+      <p id="tag-error" class="form-error" role="alert"></p>
+      <div class="dialog-actions"><button id="remove-tag" class="button danger secondary" type="button" hidden>移除标签</button><button id="save-tag" class="button" type="submit">保存标签</button></div>
+    </form>
+  </dialog>
+  <dialog id="delete-dialog" aria-labelledby="delete-title"><div class="dialog-heading"><h2 id="delete-title">移除这个标签？</h2></div><p id="delete-description"></p><p class="muted">同名标签将停止被模型自动添加；仍可手动重新添加。</p><div class="dialog-actions"><button id="cancel-delete" class="button secondary" type="button">取消</button><button id="confirm-delete" class="button danger" type="button">确认移除</button></div></dialog>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

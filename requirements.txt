@@ -1,0 +1,1 @@
+# No additional packages required. Uses AstrBot's SDK and Python standard library.

@@ -1,0 +1,8 @@
+{
+  "views": {
+    "relationships": {
+      "title": "Relationships & Profiles",
+      "description": "Inspect relationship scores, memories and evidence-based user tags."
+    }
+  }
+}
