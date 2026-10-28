@@ -33,6 +33,10 @@ def module(name, **attrs):
     return mod
 
 
+def last_call(context, system_prompt):
+    return next(call for call in reversed(context.calls) if system_prompt in call["system_prompt"])
+
+
 class CustomFilter:
     def __init__(self, *args, **kwargs):
         pass
@@ -182,7 +186,11 @@ class Context:
         self.calls.append(kwargs)
         if self.error:
             raise self.error
-        data = self.analysis if kwargs["system_prompt"] == plugin.prompts.ANALYZE else self.reply
+        data = (
+            self.analysis
+            if kwargs["system_prompt"] in {plugin.prompts.ANALYZE, plugin.prompts.PERSONAL_INTENT}
+            else self.reply
+        )
         return types.SimpleNamespace(completion_text=json.dumps(data, ensure_ascii=False))
 
     async def send_message(self, umo, chain):
@@ -277,7 +285,7 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn("原始提示", req.prompt)
         self.assertIn("嘴硬但善良", req.system_prompt)
-        self.assertIn("关系背景", req.system_prompt)
+        self.assertIn("<current_user_settings>", req.system_prompt)
         self.assertTrue(
             any(
                 getattr(part, "text", "") == "original attachment payload"
@@ -290,11 +298,13 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         responses = {
             "10001": {
                 "confidence": 0.9,
+                "persona_confidence": 0.95,
                 "user_persona": "称呼我为阿岚，我住在海边。",
                 "persona_evidence": "称呼我为阿岚，我住在海边",
             },
             "10002": {
                 "confidence": 0.9,
+                "persona_confidence": 0.95,
                 "user_persona": "称呼我为小岚，我住在山里。",
                 "persona_evidence": "称呼我为小岚，我住在山里",
             },
@@ -304,6 +314,19 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         async def per_user(**kwargs):
             payload = json.loads(kwargs["prompt"])
             if kwargs["system_prompt"] == plugin.prompts.ANALYZE:
+                # Simulate old-history contamination; Main must ignore intent fields here.
+                return types.SimpleNamespace(
+                    completion_text=json.dumps(
+                        {
+                            "confidence": 0.9,
+                            "reply_confidence": 0.99,
+                            "reply_guidance": "沿用旧助手拒绝，继续不喊主人。",
+                            "reply_evidence": "旧回复拒绝称呼",
+                        },
+                        ensure_ascii=False,
+                    )
+                )
+            if kwargs["system_prompt"] == plugin.prompts.PERSONAL_INTENT:
                 user_id = "10001" if "阿岚" in payload["user_message"] else "10002"
                 return types.SimpleNamespace(
                     completion_text=json.dumps(responses[user_id], ensure_ascii=False)
@@ -382,9 +405,18 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("主人", personal)
             self.assertIn(tone, personal)
             self.assertNotIn(other, personal)
-            self.assertNotIn("PEER_EXCLUSIVE_MASTER", json.dumps(req.contexts))
-            self.assertIn(tone, json.dumps(req.contexts, ensure_ascii=False))
-            self.assertNotIn(other, json.dumps(req.contexts, ensure_ascii=False))
+            self.assertEqual(req.contexts, [])
+            recent = self.relationship_context(req)["recent_interactions_with_this_user"]
+            history = json.dumps(recent, ensure_ascii=False)
+            self.assertIn(tone, history)
+            self.assertNotIn(other, history)
+            self.assertNotIn(
+                "PEER_EXCLUSIVE_MASTER",
+                req.system_prompt
+                + req.prompt
+                + json.dumps(req.contexts, ensure_ascii=False)
+                + " ".join(getattr(part, "text", "") for part in req.extra_user_content_parts),
+            )
         self.bot.store.reset_relationship(keys[0])
         self.assertEqual(self.bot.store.profile(keys[0])["user_persona"], "")
         self.assertIn("傲娇", self.bot.store.profile(keys[1])["user_persona"])
@@ -508,7 +540,7 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         await self.finish(first)
         second = Event(user="10002", message="你好")
         await self.bot.on_request(second, self.request())
-        payload = json.loads(self.context.calls[-1]["prompt"])
+        payload = json.loads(last_call(self.context, plugin.prompts.ANALYZE)["prompt"])
         self.assertEqual(payload["recent"], [])
         self.assertEqual(payload["existing_memories"], [])
 
@@ -575,7 +607,7 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
             await self.bot._proactive(now + 60)
         self.assertEqual(len(self.context.sent), 1)
         self.assertEqual(self.context.sent[0][1].chain[0].qq, event.user)
-        payload = json.loads(self.context.calls[-1]["prompt"])
+        payload = json.loads(last_call(self.context, plugin.prompts.PROACTIVE)["prompt"])
         self.assertNotIn("秘密地址", payload["public_memories"])
 
     async def test_quiet_hours_skip_proactive(self):

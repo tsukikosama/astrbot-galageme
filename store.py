@@ -439,12 +439,17 @@ class Store:
             except (TypeError, ValueError):
                 confidence = 0
             deltas = {}
-            if p["memory_enabled"] and confidence >= 0.7:
+            try:
+                persona_confidence = float(analysis.get("persona_confidence", confidence))
+            except (TypeError, ValueError):
+                persona_confidence = 0
+            if p["memory_enabled"] and persona_confidence >= 0.8:
                 user_persona = _clip(analysis.get("user_persona"), 4000).strip()
                 if user_persona:
                     self.db.execute(
                         "UPDATE profiles SET user_persona=? WHERE key=?", (user_persona, key)
                     )
+            if p["memory_enabled"] and confidence >= 0.7:
                 keep_private = self._replace_memories(key, analysis.get("replace_memory_ids") or [])
                 for mem in (analysis.get("memories") or [])[:20]:
                     self._insert_memory(key, mem, now, [mid], "turn", keep_private)
