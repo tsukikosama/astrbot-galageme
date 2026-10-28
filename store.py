@@ -140,6 +140,7 @@ class Store:
     def _migrate_schema(self) -> None:
         additions = {
             "profiles": [
+                ("user_persona", "TEXT NOT NULL DEFAULT ''"),
                 ("emotion_updated_at", "REAL NOT NULL DEFAULT 0"),
                 ("display_name", "TEXT NOT NULL DEFAULT ''"),
             ],
@@ -439,6 +440,11 @@ class Store:
                 confidence = 0
             deltas = {}
             if p["memory_enabled"] and confidence >= 0.7:
+                user_persona = _clip(analysis.get("user_persona"), 4000).strip()
+                if user_persona:
+                    self.db.execute(
+                        "UPDATE profiles SET user_persona=? WHERE key=?", (user_persona, key)
+                    )
                 keep_private = self._replace_memories(key, analysis.get("replace_memory_ids") or [])
                 for mem in (analysis.get("memories") or [])[:20]:
                     self._insert_memory(key, mem, now, [mid], "turn", keep_private)
@@ -808,7 +814,7 @@ class Store:
             self._clear_context(key)
             self.db.execute("DELETE FROM retired_memories WHERE key=?", (key,))
             self.db.execute(
-                "UPDATE profiles SET style='',emotion='',emotion_updated_at=0,revision=revision+1 WHERE key=?",
+                "UPDATE profiles SET user_persona='',style='',emotion='',emotion_updated_at=0,revision=revision+1 WHERE key=?",
                 (key,),
             )
             self.db.execute("UPDATE audit SET reason='' WHERE key=?", (key,))
@@ -1052,7 +1058,7 @@ class Store:
         with self._transaction():
             self._clear_context(key)
             self.db.execute(
-                "UPDATE profiles SET affection=20,trust=10,familiarity=0,closeness=0,style='',emotion='',emotion_updated_at=0,revision=revision+1 WHERE key=?",
+                "UPDATE profiles SET affection=20,trust=10,familiarity=0,closeness=0,user_persona='',style='',emotion='',emotion_updated_at=0,revision=revision+1 WHERE key=?",
                 (key,),
             )
             self.db.execute("DELETE FROM audit WHERE key=?", (key,))

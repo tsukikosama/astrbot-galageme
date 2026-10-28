@@ -137,6 +137,9 @@ function renderDetail() {
   container.append(scores);
   const relationship = el('div', 'relationship-note');
   relationship.append(el('span', 'section-caption', '目前的相处方式'), el('div', '', profile.style || '还在慢慢了解对方。相处方式会随着真实经历逐渐形成。'));
+  const personal = el('div', 'relationship-summary');
+  personal.append(el('span', 'section-caption', '该用户的独立人设'), el('div', '', profile.user_persona || '尚未单独设置。用户可直接通过聊天设置称呼、口吻和角色表现，只对本人有效。'));
+  relationship.append(personal);
   container.append(relationship);
   const tabs = el('nav', 'tabs'); tabs.setAttribute('role', 'tablist'); tabs.setAttribute('aria-label', '档案栏目');
   for (const [key, label] of [['profile', '用户画像'], ['memories', '长期记忆'], ['changes', '关系变化'], ['summaries', '每日整理'], ['proactive', '主动联系']]) {

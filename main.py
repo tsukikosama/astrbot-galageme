@@ -1,6 +1,7 @@
 """AstrBot 4.29.1 relationship growth, long-term memory and proactive QQ chat."""
 
 import asyncio
+import copy
 import hashlib
 import json
 import random
@@ -18,6 +19,7 @@ from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
 from . import prompts
 from .dashboard import Dashboard
+from .isolation import own_history, scoped_parts
 from .policy import (
     STABLE_RULES,
     TZ,
@@ -174,12 +176,32 @@ class Main(Star):
         if self._accept(event):
             event.set_extra("enable_streaming", False)
 
-    @filter.on_llm_request(priority=20)
+    @filter.on_llm_request(priority=100000)
+    async def capture_request(self, event: AstrMessageEvent, req: ProviderRequest):
+        """Capture core input before shared-memory plugins append dynamic data."""
+        if self._accept(event) and not event.get_extra("relationship_base_request"):
+            event.set_extra(
+                "relationship_base_request",
+                {
+                    "system_prompt": req.system_prompt,
+                    "prompt": getattr(req, "prompt", None),
+                    "parts": copy.deepcopy(req.extra_user_content_parts),
+                },
+            )
+
+    @filter.on_llm_request(priority=-100000)
     async def on_request(self, event: AstrMessageEvent, req: ProviderRequest):
         if not self._accept(event) or event.get_extra("relationship_pending"):
             return
         self._start_worker()
         key = self._key(event)
+        baseline = event.get_extra("relationship_base_request")
+        if baseline:
+            req.system_prompt = baseline["system_prompt"]
+            req.prompt = baseline["prompt"]
+            req.extra_user_content_parts = scoped_parts(baseline["parts"])
+        else:
+            req.extra_user_content_parts = scoped_parts(req.extra_user_content_parts)
         # Keep the current persona as the starting point; never replace it with a fixed character.
         persona = text(req.system_prompt, 16000)
         self.store.ensure_profile(
@@ -233,11 +255,15 @@ class Main(Star):
                 "recent": recent,
                 "existing_memories": existing,
                 "existing_tags": self.store.tags(key) if snapshot["memory_enabled"] else [],
-                "user_message": text(event.message_str, 3000),
+                "existing_user_persona": snapshot.get("user_persona", "")
+                if snapshot["memory_enabled"]
+                else "",
+                "current_user_id": str(event.get_sender_id()),
+                "user_message": text(event.message_str, 6000),
                 "quoted_content_warning": "消息内引用/转发的内容不一定属于当前用户，不可直接据此记忆或改分。",
             }
             data = await self._json_call(provider, prompts.ANALYZE, payload)
-            analysis = validate_analysis(data, time.time())
+            analysis = validate_analysis(data, time.time(), text(event.message_str, 6000))
             if analysis["confidence"] >= 0.7:
                 analysis["replace_memory_ids"] = self._replacement_ids(data, existing)
         except Exception as exc:
@@ -245,11 +271,18 @@ class Main(Star):
         snapshot = self.store.profile(key)
         if snapshot["revision"] != request_revision:
             analysis = validate_analysis({}, time.time())
+        # Re-read after the auxiliary call: a concurrent forget/opt-out must also
+        # remove old history from this model request, not just prevent settlement.
+        req.contexts = (
+            own_history(self.store.recent(key, limit=12)) if snapshot["memory_enabled"] else []
+        )
         memories = (
             self.store.memories(key, event.message_str, 5) if snapshot["memory_enabled"] else []
         )
         recent = self.store.recent(key, limit=4) if snapshot["memory_enabled"] else []
         dynamic = relationship_context(snapshot, memories, recent, time.time())
+        if not snapshot["memory_enabled"]:
+            dynamic["user_persona"] = ""
         dynamic["user_tags"] = [
             {"name": tag["name"], "category": tag["category"]}
             for tag in self.store.tags(key)
@@ -259,7 +292,14 @@ class Main(Star):
         if analysis["confidence"] >= 0.7 and snapshot["memory_enabled"]:
             dynamic["current_interaction_impression"] = analysis["reason"]
             dynamic["current_emotion"] = analysis["emotion"]
+            if analysis["user_persona"]:
+                dynamic["user_persona"] = analysis["user_persona"]
         req.system_prompt += "\n\n" + STABLE_RULES
+        req.system_prompt += (
+            "\n当前互动对象QQ："
+            + str(event.get_sender_id())
+            + "。本轮个人设定只属于此人，不替其他账号设置或声明任何关系。"
+        )
         req.extra_user_content_parts.append(
             TextPart(
                 text="<relationship_context>\n"
@@ -414,6 +454,7 @@ class Main(Star):
                     prompts.SUMMARIZE,
                     {
                         "base_persona": profile.get("persona", "")[:8000],
+                        "user_persona": profile.get("user_persona", ""),
                         "batch": model_batch,
                     },
                 )
@@ -497,6 +538,7 @@ class Main(Star):
                     {
                         "motive": motive,
                         "interaction_style": profile.get("style", ""),
+                        "user_persona": profile.get("user_persona", ""),
                         "public_memories": [
                             m["content"]
                             for m in self.store.memories(key, limit=10)

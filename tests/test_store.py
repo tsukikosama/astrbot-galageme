@@ -14,6 +14,7 @@ else:
 
 ensure_package()
 
+from astrbot_plugin_relationship_memory.policy import validate_analysis
 from astrbot_plugin_relationship_memory.store import Store
 
 
@@ -124,6 +125,89 @@ class StoreTests(unittest.TestCase):
         rev = self.store.profile("persona-key")["revision"]
         self.store.set_preferences("persona-key", memory_enabled=False)
         self.assertEqual(self.store.profile("persona-key")["revision"], rev + 1)
+
+    def test_personal_persona_requires_current_message_evidence_and_is_per_profile(self):
+        now = 1_800_000_000
+        user_message = "请记住我叫阿岚，平时住在海边。"
+        valid = validate_analysis(
+            {
+                "confidence": 0.95,
+                "user_persona": "用户叫阿岚，住在海边。",
+                "persona_evidence": "我叫阿岚，平时住在海边",
+            },
+            now,
+            user_message,
+        )
+        self.assertEqual(valid["user_persona"], "用户叫阿岚，住在海边。")
+        foreign = validate_analysis(
+            {
+                "confidence": 0.95,
+                "user_persona": "用户叫阿岚。",
+                "persona_evidence": "用户叫阿岚",
+            },
+            now,
+            "我朋友叫阿岚",
+        )
+        self.assertEqual(foreign["user_persona"], "")
+        self.assertEqual(
+            validate_analysis(
+                {
+                    "confidence": 0.95,
+                    "user_persona": "无来源的人设",
+                    "persona_evidence": "",
+                },
+                now,
+                user_message,
+            )["user_persona"],
+            "",
+        )
+
+        self.store.ensure_profile("persona-a", "g", "u1", "umo")
+        self.store.ensure_profile("persona-b", "g", "u2", "umo")
+        self.assertTrue(self.store.commit_turn("persona-a", "a1", user_message, "好的", valid, now))
+        self.assertEqual(self.store.profile("persona-a")["user_persona"], "用户叫阿岚，住在海边。")
+        self.assertEqual(self.store.profile("persona-b")["user_persona"], "")
+
+        # Empty means no update, and memory opt-out blocks further persona writes.
+        self.store.commit_turn(
+            "persona-a",
+            "a2",
+            "普通聊天",
+            "收到",
+            self.analysis(user_persona="", persona_evidence=""),
+            now + 7200,
+        )
+        self.assertEqual(self.store.profile("persona-a")["user_persona"], "用户叫阿岚，住在海边。")
+        self.store.set_preferences("persona-a", memory_enabled=False)
+        self.store.commit_turn(
+            "persona-a",
+            "a3",
+            "称呼我为小岚",
+            "好",
+            self.analysis(user_persona="用户叫小岚。", persona_evidence="称呼我为小岚"),
+            now + 14400,
+        )
+        self.assertEqual(self.store.profile("persona-a")["user_persona"], "用户叫阿岚，住在海边。")
+        self.store.forget("persona-a")
+        self.assertEqual(self.store.profile("persona-a")["user_persona"], "")
+        self.assertEqual(self.store.profile("persona-b")["user_persona"], "")
+
+    def test_relationship_reset_clears_personal_persona_only_for_target_profile(self):
+        now = 1_800_000_000
+        self.store.ensure_profile("persona-a", "g", "u1", "umo")
+        self.store.ensure_profile("persona-b", "g", "u2", "umo")
+        for key, label in (("persona-a", "甲"), ("persona-b", "乙")):
+            self.store.commit_turn(
+                key,
+                f"{label}-1",
+                f"我叫{label}",
+                "记住了",
+                self.analysis(user_persona=f"用户叫{label}。", persona_evidence=f"我叫{label}"),
+                now,
+            )
+        self.store.reset_relationship("persona-a")
+        self.assertEqual(self.store.profile("persona-a")["user_persona"], "")
+        self.assertEqual(self.store.profile("persona-b")["user_persona"], "用户叫乙。")
 
     def test_memory_dedupe_sources_replacement_and_search(self):
         t = 1_800_000_000

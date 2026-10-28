@@ -209,8 +209,21 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
 
     def request(self):
         return types.SimpleNamespace(
-            system_prompt="你是嘴硬但善良的角色。", extra_user_content_parts=[]
+            system_prompt="你是嘴硬但善良的角色。",
+            prompt="这是提供方原始提示。",
+            contexts=[],
+            extra_user_content_parts=[],
         )
+
+    @staticmethod
+    def relationship_context(req):
+        part = next(
+            item
+            for item in req.extra_user_content_parts
+            if getattr(item, "text", "").startswith("<relationship_context>")
+        )
+        raw = part.text.split("\n", 1)[1].rsplit("\n</relationship_context>", 1)[0]
+        return json.loads(raw)
 
     async def finish(self, event, streaming=False):
         event._has_send_oper = True
@@ -240,6 +253,180 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.bot.store.profile(self.bot._key(event))["affection"], 22)
         await self.bot.after_sent(event)
         self.assertEqual(self.bot.store.profile(self.bot._key(event))["affection"], 22)
+
+    async def test_request_capture_discards_later_shared_injection_and_restores_baseline(self):
+        event = Event()
+        req = self.request()
+        original_attachment = TextPart("original attachment payload")
+        req.extra_user_content_parts.append(original_attachment)
+        await self.bot.capture_request(event, req)
+
+        req.system_prompt += "\nSHARED SYSTEM MEMORY from another user"
+        req.prompt += "\nSHARED PROMPT MEMORY from another user"
+        req.contexts.append("SHARED CONTEXT MEMORY from another user")
+        injected = TextPart("SHARED EXTRA MEMORY from another user")
+        req.extra_user_content_parts.append(injected)
+
+        await self.bot.on_request(event, req)
+
+        self.assertNotIn("SHARED", req.system_prompt)
+        self.assertNotIn("SHARED", req.prompt)
+        self.assertNotIn("SHARED", json.dumps(req.contexts, ensure_ascii=False))
+        self.assertNotIn(
+            "SHARED", " ".join(getattr(part, "text", "") for part in req.extra_user_content_parts)
+        )
+        self.assertIn("原始提示", req.prompt)
+        self.assertIn("嘴硬但善良", req.system_prompt)
+        self.assertIn("关系背景", req.system_prompt)
+        self.assertTrue(
+            any(
+                getattr(part, "text", "") == "original attachment payload"
+                for part in req.extra_user_content_parts
+            )
+        )
+        self.assertFalse(any(part is injected for part in req.extra_user_content_parts))
+
+    async def test_users_have_separate_context_and_conflicting_personal_personas(self):
+        responses = {
+            "10001": {
+                "confidence": 0.9,
+                "user_persona": "称呼我为阿岚，我住在海边。",
+                "persona_evidence": "称呼我为阿岚，我住在海边",
+            },
+            "10002": {
+                "confidence": 0.9,
+                "user_persona": "称呼我为小岚，我住在山里。",
+                "persona_evidence": "称呼我为小岚，我住在山里",
+            },
+        }
+        original = self.context.llm_generate
+
+        async def per_user(**kwargs):
+            payload = json.loads(kwargs["prompt"])
+            if kwargs["system_prompt"] == plugin.prompts.ANALYZE:
+                user_id = "10001" if "阿岚" in payload["user_message"] else "10002"
+                return types.SimpleNamespace(
+                    completion_text=json.dumps(responses[user_id], ensure_ascii=False)
+                )
+            return await original(**kwargs)
+
+        self.context.llm_generate = per_user
+        a = Event(user="10001", message="请记住：称呼我为阿岚，我住在海边。", mid="a")
+        await self.bot.on_request(a, self.request())
+        await self.finish(a)
+
+        b = Event(user="10002", message="请记住：称呼我为小岚，我住在山里。", mid="b")
+        b_req = self.request()
+        await self.bot.on_request(b, b_req)
+        await self.finish(b)
+
+        a_key, b_key = self.bot._key(a), self.bot._key(b)
+        self.assertEqual(
+            self.bot.store.profile(a_key)["user_persona"], responses["10001"]["user_persona"]
+        )
+        self.assertEqual(
+            self.bot.store.profile(b_key)["user_persona"], responses["10002"]["user_persona"]
+        )
+        context = self.relationship_context(b_req)
+        self.assertEqual(context["user_id"], "10002")
+        self.assertNotIn("海边", json.dumps(context, ensure_ascii=False))
+        self.assertIn("小岚", json.dumps(context, ensure_ascii=False))
+
+        self.bot.store.forget(a_key)
+        self.assertEqual(self.bot.store.profile(a_key)["user_persona"], "")
+        self.assertEqual(
+            self.bot.store.profile(b_key)["user_persona"], responses["10002"]["user_persona"]
+        )
+
+    async def test_failed_delivery_does_not_save_user_persona(self):
+        self.context.analysis.update(
+            {
+                "user_persona": "称呼我为阿岚。",
+                "persona_evidence": "称呼我为阿岚",
+            }
+        )
+        event = Event(message="请记住，称呼我为阿岚。")
+        await self.bot.on_request(event, self.request())
+        await self.bot.on_done(
+            event,
+            None,
+            types.SimpleNamespace(completion_text="没有发出的回复", role="assistant"),
+        )
+        event.result = types.SimpleNamespace(
+            is_llm_result=lambda: True,
+            result_content_type=ResultContentType.LLM_RESULT,
+        )
+        await self.bot.after_sent(event)
+        self.assertEqual(self.bot.store.profile(self.bot._key(event))["user_persona"], "")
+
+    async def test_two_users_can_save_same_title_and_change_only_their_own_persona(self):
+        for uid, tone in [("10001", "温柔"), ("10002", "傲娇")]:
+            message = f"以后叫我主人，说话{tone}一点"
+            self.context.analysis = {
+                "confidence": 0.95,
+                "user_persona": f"称呼当前用户为主人，口吻{tone}",
+                "persona_evidence": message,
+            }
+            event = Event(user=uid, message=message, mid="setting-" + uid)
+            await self.bot.on_request(event, self.request())
+            await self.finish(event)
+        keys = [self.bot._key(Event(user=uid)) for uid in ("10001", "10002")]
+        self.context.analysis = {"confidence": 0.95}
+        for uid, tone, other in [("10001", "温柔", "傲娇"), ("10002", "傲娇", "温柔")]:
+            event = Event(user=uid, message="你好", mid="hello-" + uid)
+            req = self.request()
+            # Even a host session containing a peer's setting must not be replayed.
+            req.contexts = [{"role": "user", "content": "PEER_EXCLUSIVE_MASTER"}]
+            await self.bot.on_request(event, req)
+            personal = self.relationship_context(req)["user_persona"]
+            self.assertIn("主人", personal)
+            self.assertIn(tone, personal)
+            self.assertNotIn(other, personal)
+            self.assertNotIn("PEER_EXCLUSIVE_MASTER", json.dumps(req.contexts))
+            self.assertIn(tone, json.dumps(req.contexts, ensure_ascii=False))
+            self.assertNotIn(other, json.dumps(req.contexts, ensure_ascii=False))
+        self.bot.store.reset_relationship(keys[0])
+        self.assertEqual(self.bot.store.profile(keys[0])["user_persona"], "")
+        self.assertIn("傲娇", self.bot.store.profile(keys[1])["user_persona"])
+
+    async def test_core_group_context_is_removed_but_current_quote_and_media_remain(self):
+        event, req = Event(), self.request()
+        req.extra_user_content_parts = [
+            TextPart(
+                "<system_reminder>You are in a group chat. Belows are group chat context after your last reply:\n--- BEGIN CONTEXT---\n[peer]: PEER_PERSONA_ONLY\n--- END CONTEXT ---\n</system_reminder>"
+            ),
+            TextPart("<Quoted Message>这个菜怎么做？</Quoted Message>"),
+            {"type": "image_url", "image_url": {"url": "https://example.com/current.png"}},
+        ]
+        await self.bot.capture_request(event, req)
+        await self.bot.on_request(event, req)
+        payload = " ".join(getattr(p, "text", "") for p in req.extra_user_content_parts)
+        self.assertNotIn("PEER_PERSONA_ONLY", payload)
+        self.assertIn("这个菜怎么做", payload)
+        self.assertIn(
+            {"type": "image_url", "image_url": {"url": "https://example.com/current.png"}},
+            req.extra_user_content_parts,
+        )
+
+    async def test_forget_during_analysis_also_removes_history_from_reply_request(self):
+        event = Event(message="新的聊天", mid="new")
+        key = self.bot._key(event)
+        self.bot.store.ensure_profile(key, event.group, event.user, event.unified_msg_origin)
+        self.bot.store.commit_turn(
+            key, "old", "PERSONAL_OLD_SETTING", "old reply", {"confidence": 0.9}
+        )
+
+        async def forget_while_analyzing(**kwargs):
+            self.bot.store.forget(key)
+            return types.SimpleNamespace(completion_text='{"confidence":0.9}')
+
+        self.context.llm_generate = forget_while_analyzing
+        req = self.request()
+        await self.bot.on_request(event, req)
+        self.assertEqual(req.contexts, [])
+        self.assertNotIn(
+            "PERSONAL_OLD_SETTING", json.dumps(self.relationship_context(req), ensure_ascii=False)
+        )
 
     async def test_streaming_delivery_order(self):
         event = Event()
