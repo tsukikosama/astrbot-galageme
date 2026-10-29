@@ -424,7 +424,10 @@ class PersonaIntentPluginTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn(peer_tone, assembled)
             self.assertIn("拒绝", req.system_prompt)
             self.assertIn("用户边界", req.system_prompt)
-            self.assertEqual(req.contexts, [])
+            # The old refusal is replayed as a real assistant turn; the stable
+            # rules above already say it is not a ban on the current request.
+            self.assertEqual([item["role"] for item in req.contexts], ["user", "assistant"])
+            self.assertIn("这个称呼我不喊", json.dumps(req.contexts, ensure_ascii=False))
             reference_history = self.relationship_context(req)["recent_interactions_with_this_user"]
             self.assertIn("这个称呼我不喊", json.dumps(reference_history, ensure_ascii=False))
             self.assertNotIn(peer_tone, json.dumps(reference_history, ensure_ascii=False))

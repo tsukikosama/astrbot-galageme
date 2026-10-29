@@ -19,7 +19,7 @@ from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
 from . import prompts
 from .dashboard import Dashboard
-from .isolation import scoped_parts
+from .isolation import own_history, scoped_parts
 from .policy import (
     DEFAULT_DAILY_LIMITS,
     DIMENSIONS,
@@ -74,6 +74,13 @@ class Main(Star):
 
     def _get(self, name, default):
         return self.config.get(name, default)
+
+    def _history_turns(self):
+        """How many past turns are replayed as real dialogue; 0 disables replay."""
+        try:
+            return max(0, int(float(self._get("history_turns", 12))))
+        except (TypeError, ValueError):
+            return 12
 
     def _daily_limits(self):
         """Per-user daily change budget; 0 (or a blank value) means no limit."""
@@ -325,14 +332,20 @@ class Main(Star):
             analysis = validate_analysis({}, time.time())
         # Re-read after the auxiliary call: a concurrent forget/opt-out must also
         # remove old history from this model request, not just prevent settlement.
-        # Replaying old assistant refusals as active assistant-role messages
-        # makes the model treat them as a stance it must keep defending. Keep
-        # these turns as sourced reference data below, not as active dialogue.
-        req.contexts = []
+        # An old assistant refusal replayed as an active assistant message is
+        # safe here: the current settings block already tells the model that
+        # past refusals and impressions do not turn preferences into bans.
         memories = (
             self.store.memories(key, event.message_str, 5) if snapshot["memory_enabled"] else []
         )
-        recent = self.store.recent(key, limit=12) if snapshot["memory_enabled"] else []
+        recent = (
+            self.store.recent(key, limit=self._history_turns())
+            if snapshot["memory_enabled"]
+            else []
+        )
+        # Replace the host history instead of dropping it: the host history is
+        # shared by everyone in the group, these turns are stored per sender.
+        req.contexts = own_history(recent)
         dynamic = relationship_context(snapshot, memories, recent, time.time())
         settings = personal_settings(snapshot, analysis)
         dynamic["user_persona"] = settings["persistent_persona"]

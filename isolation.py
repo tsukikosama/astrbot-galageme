@@ -34,14 +34,23 @@ def scoped_parts(parts):
     return result
 
 
-def own_history(turns):
-    """Do not replay host conversation history, which can contain group injections."""
+def _clip(value, limit):
+    value = value or ""
+    return value if len(value) <= limit else value[:limit]
+
+
+def own_history(turns, clip=2000):
+    """Rebuild the dialogue from this sender's own records.
+
+    The host conversation history is shared across a group and can carry other
+    people's lines, so the model gets these sender-scoped turns instead.
+    """
     result = []
     for turn in turns:
         # Image-only turns have no stored image here; do not invent an empty user turn.
         if not turn["user_text"]:
             continue
-        result.append({"role": "user", "content": turn["user_text"]})
+        result.append({"role": "user", "content": _clip(turn["user_text"], clip)})
         if turn["assistant_text"]:
-            result.append({"role": "assistant", "content": turn["assistant_text"]})
+            result.append({"role": "assistant", "content": _clip(turn["assistant_text"], clip)})
     return result

@@ -262,6 +262,46 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         await self.bot.after_sent(event)
         self.assertEqual(self.bot.store.profile(self.bot._key(event))["affection"], 22)
 
+    async def test_request_replays_only_this_users_own_turns_as_real_dialogue(self):
+        first, second = Event(mid="1"), Event(mid="2")
+        await self.bot.on_request(first, self.request())
+        await self.finish(first)
+        await self.bot.on_request(second, self.request())
+        await self.finish(second)
+
+        req = self.request()
+        req.contexts = [{"role": "user", "content": "PEER_LINE_FROM_GROUP"}]
+        await self.bot.on_request(Event(mid="3"), req)
+        self.assertEqual(
+            [item["role"] for item in req.contexts], ["user", "assistant", "user", "assistant"]
+        )
+        self.assertNotIn("PEER_LINE_FROM_GROUP", json.dumps(req.contexts, ensure_ascii=False))
+        self.assertEqual(req.contexts[0]["content"], "谢谢你认真听我说")
+        self.assertEqual(req.contexts[1]["content"], "我听着呢，你继续说。")
+
+        peer = Event(user="10002", mid="peer")
+        peer_req = self.request()
+        await self.bot.on_request(peer, peer_req)
+        self.assertEqual(peer_req.contexts, [])
+
+    async def test_history_turns_zero_replays_nothing(self):
+        self.bot.config["history_turns"] = 0
+        first = Event(mid="1")
+        await self.bot.on_request(first, self.request())
+        await self.finish(first)
+        req = self.request()
+        await self.bot.on_request(Event(mid="2"), req)
+        self.assertEqual(req.contexts, [])
+
+    async def test_memory_disabled_replays_no_history(self):
+        first = Event(mid="1")
+        await self.bot.on_request(first, self.request())
+        await self.finish(first)
+        self.bot.store.set_preferences(self.bot._key(first), memory_enabled=False)
+        req = self.request()
+        await self.bot.on_request(Event(mid="2"), req)
+        self.assertEqual(req.contexts, [])
+
     async def test_request_capture_discards_later_shared_injection_and_restores_baseline(self):
         event = Event()
         req = self.request()
@@ -405,7 +445,9 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("主人", personal)
             self.assertIn(tone, personal)
             self.assertNotIn(other, personal)
-            self.assertEqual(req.contexts, [])
+            # The peer's line is gone; what remains is this user's own past turn.
+            self.assertEqual([item["role"] for item in req.contexts], ["user", "assistant"])
+            self.assertNotIn("PEER_EXCLUSIVE_MASTER", json.dumps(req.contexts, ensure_ascii=False))
             recent = self.relationship_context(req)["recent_interactions_with_this_user"]
             history = json.dumps(recent, ensure_ascii=False)
             self.assertIn(tone, history)

@@ -7,6 +7,7 @@
   "model_timeout": {"description": "辅助模型调用超时（秒）", "type": "int", "default": 30, "slider": {"min": 5, "max": 120, "step": 5}},
   "summary_hour": {"description": "每日整理时间（北京时间整点）", "type": "int", "default": 3, "slider": {"min": 0, "max": 23, "step": 1}},
   "retention_days": {"description": "原始互动记录保留天数", "type": "int", "default": 30, "hint": "长期记忆不会随原始对话自动到期。"},
+  "history_turns": {"description": "作为真实对话回放的历史轮数", "type": "int", "default": 12, "slider": {"min": 0, "max": 30, "step": 1}, "hint": "机器人看到的连续对话来自本人记录，不含群里其他人的发言；填0则不回放历史，只保留本轮。"},
   "affection_query_enabled": {"description": "允许用户查询自己的好感度", "type": "bool", "default": true, "hint": "开启后，用户在启用群里 @机器人 并发送“查看好感度”即可收到本人当前数值。关闭后该句按普通聊天处理。"},
   "affection_query_scope": {"description": "查询时展示的维度", "type": "string", "default": "affection", "hint": "affection：只展示好感度；all：同时展示好感、信任、熟悉、亲近。", "options": ["affection", "all"]},
   "affection_query_show_number": {"description": "展示具体数值", "type": "bool", "default": true, "hint": "关闭后只回复自然语言相处描述，不给出数字。"},
