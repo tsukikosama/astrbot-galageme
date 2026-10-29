@@ -634,32 +634,48 @@ class Main(Star):
                     },
                 )
                 message = text(generated.get("text"), 180).strip()
-                if (
-                    generated.get("send") is not True
-                    or not message
-                    or "[CQ:" in message
-                    or "@" in message
-                    or message in stats["last_texts"]
-                ):
-                    self.store.finish_proactive(job, "failed")
+                # Every discard path records why, so the panel never shows an
+                # empty body without an explanation.
+                if generated.get("send") is not True:
+                    reason = "模型判断这次没有值得说的内容（send=false）"
+                elif not message:
+                    reason = "模型没有返回可用正文"
+                elif "[CQ:" in message:
+                    reason = "生成内容含 CQ 码，已丢弃"
+                elif "@" in message:
+                    reason = "生成内容含 @，已丢弃（@ 由插件单独发送）"
+                elif message in stats["last_texts"]:
+                    reason = "与最近一次主动消息重复"
+                else:
+                    reason = ""
+                if reason:
+                    self.store.finish_proactive(job, "failed", reason=reason)
                     continue
                 if not await self._can_contact(profile):
-                    self.store.finish_proactive(job, "failed")
+                    self.store.finish_proactive(
+                        job,
+                        "failed",
+                        reason="发送前校验未通过：该用户已不在群、机器人被禁言，或平台不是 aiocqhttp",
+                    )
                     continue
                 async with self._lock(key):
                     fresh = self.store.profile(key)
-                    if (
-                        fresh["revision"] != profile["revision"]
-                        or not fresh["proactive_enabled"]
-                        or not fresh["memory_enabled"]
-                        or not self._active_profile(fresh)
-                        or quiet_hour(
-                            time.time(),
-                            int(self._get("quiet_start", 23)),
-                            int(self._get("quiet_end", 9)),
-                        )
+                    if fresh["revision"] != profile["revision"]:
+                        reason = "发送前复检未通过：档案刚被更新"
+                    elif not fresh["proactive_enabled"] or not fresh["memory_enabled"]:
+                        reason = "发送前复检未通过：主动联系或记忆已关闭"
+                    elif not self._active_profile(fresh):
+                        reason = "发送前复检未通过：群或档案已停用"
+                    elif quiet_hour(
+                        time.time(),
+                        int(self._get("quiet_start", 23)),
+                        int(self._get("quiet_end", 9)),
                     ):
-                        self.store.finish_proactive(job, "failed")
+                        reason = "发送前复检未通过：已进入安静时段"
+                    else:
+                        reason = ""
+                    if reason:
+                        self.store.finish_proactive(job, "failed", reason=reason)
                         continue
                     attempted = True
                     sent = await asyncio.wait_for(
@@ -670,15 +686,27 @@ class Main(Star):
                         timeout=30,
                     )
                     self.store.finish_proactive(
-                        job, "sent" if sent else "failed", message if sent else ""
+                        job,
+                        "sent" if sent else "failed",
+                        message if sent else "",
+                        "" if sent else "平台未返回发送成功，未确认送达",
                     )
                     if sent and followups:
                         self.store.finish_followup(followups[0]["id"])
             except asyncio.CancelledError:
-                self.store.finish_proactive(job, "unknown" if attempted else "failed")
+                self.store.finish_proactive(
+                    job,
+                    "unknown" if attempted else "failed",
+                    reason="任务被取消，送达结果未知" if attempted else "任务被取消，未发送",
+                )
                 raise
             except Exception as exc:
-                self.store.finish_proactive(job, "unknown" if attempted else "failed")
+                self.store.finish_proactive(
+                    job,
+                    "unknown" if attempted else "failed",
+                    reason=("发送阶段异常：" if attempted else "生成阶段异常：")
+                    + type(exc).__name__,
+                )
                 logger.warning("主动互动已跳过：%s", type(exc).__name__)
 
     async def _can_contact(self, profile):

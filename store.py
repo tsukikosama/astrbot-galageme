@@ -131,7 +131,8 @@ class Store:
         CREATE TABLE IF NOT EXISTS proactive_jobs(
           id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT NOT NULL, group_id TEXT NOT NULL, group_scope TEXT NOT NULL DEFAULT '',
           opportunity TEXT NOT NULL, created_at REAL NOT NULL, day TEXT NOT NULL,
-          status TEXT NOT NULL, text TEXT NOT NULL DEFAULT '', UNIQUE(key,opportunity)
+          status TEXT NOT NULL, text TEXT NOT NULL DEFAULT '',
+          reason TEXT NOT NULL DEFAULT '', UNIQUE(key,opportunity)
         );
         CREATE INDEX IF NOT EXISTS jobs_group_day ON proactive_jobs(group_id,day,status);
         """)
@@ -150,7 +151,10 @@ class Store:
                 ("source_ids", "TEXT NOT NULL DEFAULT '[]'"),
                 ("source_type", "TEXT NOT NULL DEFAULT 'turn'"),
             ],
-            "proactive_jobs": [("group_scope", "TEXT NOT NULL DEFAULT ''")],
+            "proactive_jobs": [
+                ("group_scope", "TEXT NOT NULL DEFAULT ''"),
+                ("reason", "TEXT NOT NULL DEFAULT ''"),
+            ],
         }
         for table, columns in additions.items():
             existing = {r[1] for r in self.db.execute(f"PRAGMA table_info({table})")}
@@ -317,7 +321,7 @@ class Store:
             (key,),
         ).fetchall()
         jobs = self.db.execute(
-            "SELECT id,opportunity,created_at,status,text FROM proactive_jobs WHERE key=? ORDER BY created_at DESC,id DESC LIMIT 20",
+            "SELECT id,opportunity,created_at,status,text,reason FROM proactive_jobs WHERE key=? ORDER BY created_at DESC,id DESC LIMIT 20",
             (key,),
         ).fetchall()
         return {
@@ -1002,11 +1006,16 @@ class Store:
                 allowed = False
             if not allowed:
                 return None
-            success = max(0.0, min(1.0, float(probability))) > max(0.0, min(1.0, float(draw)))
+            chance = max(0.0, min(1.0, float(probability)))
+            roll = max(0.0, min(1.0, float(draw)))
+            success = chance > roll
             status = "reserved" if success else "missed"
+            # A losing draw is still persisted so the same opportunity is never
+            # re-rolled; the reason explains why nothing was generated.
+            reason = "" if success else _clip(f"概率未中：p={chance:.3f}，本次抽到 {roll:.3f}", 300)
             cur = self.db.execute(
-                "INSERT INTO proactive_jobs(key,group_id,group_scope,opportunity,created_at,day,status) VALUES(?,?,?,?,?,?,?)",
-                (key, p["group_id"], group_scope, opp, now, day, status),
+                "INSERT INTO proactive_jobs(key,group_id,group_scope,opportunity,created_at,day,status,reason) VALUES(?,?,?,?,?,?,?,?)",
+                (key, p["group_id"], group_scope, opp, now, day, status, reason),
             )
             return int(cur.lastrowid) if success else None
 
@@ -1020,7 +1029,7 @@ class Store:
             pass
         return _clip(fallback_group_id, 128)
 
-    def finish_proactive(self, job_id: int, status: str, text: str = "") -> None:
+    def finish_proactive(self, job_id: int, status: str, text: str = "", reason: str = "") -> None:
         if status not in ("sent", "failed", "unknown"):
             raise ValueError("status must be sent, failed, or unknown")
         with self._transaction():
@@ -1030,8 +1039,8 @@ class Store:
             if not row or row["status"] != "reserved":
                 return
             self.db.execute(
-                "UPDATE proactive_jobs SET status=?,text=? WHERE id=?",
-                (status, _clip(text, 2000), job_id),
+                "UPDATE proactive_jobs SET status=?,text=?,reason=? WHERE id=?",
+                (status, _clip(text, 2000), _clip(reason, 300), job_id),
             )
 
     def proactive_stats(self, key: str, now: float) -> dict:

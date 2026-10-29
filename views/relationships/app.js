@@ -4,6 +4,15 @@ const dimensions = { affection: '好感', trust: '信任', familiarity: '熟悉'
 const sourceNames = { model: '对话提取', summary: '每日整理', manual: '人工维护' };
 const kinds = { fact: '事实', preference: '偏好', event: '共同事件', relationship: '关系记忆' };
 const jobStates = { sent: '已发送', failed: '已跳过／失败', unknown: '送达情况未知', missed: '本次未触发', reserved: '准备发送' };
+// Shown when a job produced no message body. A missed draw never generates text,
+// so its wording must not look like a message that lost its content.
+const jobEmpty = {
+  sent: '已发送，但正文没有被记录。',
+  failed: '没有发送，原因未记录（多为旧版本留下的记录）。',
+  unknown: '已尝试发送，但无法确认是否送达。',
+  missed: '这次机会没有抽中，没有生成任何内容，也没有发送消息。',
+  reserved: '正在准备发送，正文尚未生成。'
+};
 const state = { bridge: null, items: [], selected: '', detail: null, offset: 0, limit: 20, total: 0, tab: 'profile', listSequence: 0, detailSequence: 0, editing: null, tagBusy: false };
 
 function el(tag, className = '', content) {
@@ -232,7 +241,10 @@ function renderSummaries(panel, summaries) {
 function renderProactive(panel, jobs) {
   heading(panel, '主动联系记录', '最近20次联系机会。没有抽中、生成放弃或发送失败都不代表关系扣分。');
   if (!jobs.length) panel.append(empty('还没有主动联系记录。需要合适的动机，并通过概率与频率检查。'));
-  for (const job of jobs) panel.append(record(job.text || '本次没有发送消息正文。', [jobStates[job.status] || job.status, date(job.created_at)]));
+  for (const job of jobs) {
+    const body = job.text || job.reason || jobEmpty[job.status] || '本次没有发送消息正文。';
+    panel.append(record(body, [jobStates[job.status] || job.status, job.text && job.reason ? job.reason : '', date(job.created_at)]));
+  }
 }
 
 function editTag(tag) {
