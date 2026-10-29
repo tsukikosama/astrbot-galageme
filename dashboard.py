@@ -6,11 +6,24 @@ import re
 
 from astrbot.api.web import error_response, json_response, request
 
+from .policy import DIMENSIONS, level_label, level_of
+
 PLUGIN_NAME = "astrbot_plugin_relationship_memory"
 
 
 def public_id(key):
     return hashlib.sha256(key.encode("utf-8")).hexdigest()
+
+
+def score_levels(profile):
+    """Display-only level bands for every dimension. Never changes scores."""
+    levels = {}
+    for name in DIMENSIONS:
+        value = profile.get(name, 0)
+        band = level_of(value)
+        band["label"] = level_label(value)
+        levels[name] = band
+    return levels
 
 
 class Dashboard:
@@ -80,6 +93,7 @@ class Dashboard:
         for item in result["items"]:
             item["id"] = public_id(item.pop("key"))
             item["group_enabled"] = self.plugin._enabled_group(item["group_id"])
+            item["levels"] = score_levels(item)
         result["role_id"] = self.plugin._get("role_id", "default")
         result["offset"] = offset
         result["limit"] = limit
@@ -102,6 +116,7 @@ class Dashboard:
         profile.pop("provider_id", None)
         profile["id"] = public_id(key)
         profile["group_enabled"] = self.plugin._enabled_group(profile["group_id"])
+        profile["levels"] = score_levels(profile)
         # All nested rows must omit internal relation keys and model settings.
         for field in ("tags", "memories", "daily_summaries", "changes", "proactive"):
             for row in detail.get(field, []):

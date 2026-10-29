@@ -31,6 +31,13 @@ function date(value) {
 function empty(message, compact = true) { return el('p', `empty${compact ? ' compact' : ''}`, message); }
 function avatar(name) { return el('div', 'avatar', Array.from(name || '友')[0]); }
 function safeScore(value) { return Math.max(0, Math.min(100, Number(value) || 0)); }
+function levelOf(user, dimension) { return user?.levels?.[dimension] || null; }
+function affectionBadge(user) {
+  const badge = el('span', 'affection', `♡ ${safeScore(user.affection)}`);
+  const level = levelOf(user, 'affection');
+  if (level) badge.append(el('small', '', level.name));
+  return badge;
+}
 
 function renderUsers() {
   const list = $('user-list');
@@ -43,7 +50,7 @@ function renderUsers() {
     row.setAttribute('aria-pressed', String(user.id === state.selected));
     const lines = el('div', 'user-lines');
     lines.append(el('span', 'user-name', name), el('span', 'user-meta', `QQ ${user.user_id}`), el('span', 'user-meta', `群 ${user.group_id} · ${user.tag_count || 0} 个标签`));
-    row.append(avatar(name), lines, el('span', 'affection', `♡ ${safeScore(user.affection)}`));
+    row.append(avatar(name), lines, affectionBadge(user));
     list.append(row);
   }
   $('total').textContent = state.total;
@@ -126,13 +133,24 @@ function renderDetail() {
   const scores = el('div', 'scores');
   for (const [key, label] of Object.entries(dimensions)) {
     const score = el('div', 'score');
+    const level = levelOf(profile, key);
+    const head = el('div', 'score-head');
+    head.append(el('span', 'score-label', label));
+    if (level) {
+      const tag = el('span', 'level-tag', level.label);
+      tag.title = level.description || '';
+      head.append(tag);
+    }
     const value = el('div', 'score-value', safeScore(profile[key]));
     value.append(el('small', '', '/ 100'));
     const track = el('div', 'score-track');
     track.setAttribute('role', 'meter'); track.setAttribute('aria-label', label);
     track.setAttribute('aria-valuemin', '0'); track.setAttribute('aria-valuemax', '100'); track.setAttribute('aria-valuenow', safeScore(profile[key]));
     const fill = el('div', 'score-fill'); fill.style.width = `${safeScore(profile[key])}%`;
-    track.append(fill); score.append(el('span', 'score-label', label), value, track); scores.append(score);
+    track.append(fill);
+    score.append(head, value, track);
+    if (level?.description) score.append(el('div', 'score-note', level.description));
+    scores.append(score);
   }
   container.append(scores);
   const relationship = el('div', 'relationship-note');

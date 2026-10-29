@@ -105,6 +105,32 @@ class DashboardTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["memories"][0]["content"], "非公开内容")
         self.assertFalse(result["memories"][0]["public"])
 
+    async def test_list_and_detail_include_score_levels(self):
+        with self.bot.store._transaction():
+            self.bot.store.db.execute(
+                "UPDATE profiles SET affection=42,trust=70,familiarity=25,closeness=0 WHERE key=?",
+                (self.key,),
+            )
+        self.request.query = {"id": self.id}
+        profile = (await self.bot.dashboard.user())["payload"]["profile"]
+        levels = profile["levels"]
+        self.assertEqual(levels["affection"]["name"], "熟悉")
+        self.assertEqual(levels["affection"]["label"], "Lv.3 熟悉")
+        self.assertEqual(levels["trust"]["name"], "亲密")
+        self.assertEqual(levels["familiarity"]["name"], "认识")
+        self.assertEqual(levels["closeness"]["name"], "陌生")
+        self.assertEqual(levels["affection"]["level"], 3)
+        self.assertEqual(levels["trust"]["level"], 5)
+        self.assertEqual(levels["familiarity"]["level"], 2)
+        self.assertEqual(levels["closeness"]["level"], 1)
+        for dimension in ("affection", "trust", "familiarity", "closeness"):
+            self.assertTrue(levels[dimension]["description"])
+        self.request.query = {"limit": "20"}
+        listed = (await self.bot.dashboard.users())["payload"]["items"][0]
+        self.assertEqual(listed["levels"]["affection"]["name"], "熟悉")
+        # Levels are display-only: they must not be persisted as new score fields.
+        self.assertNotIn("levels", self.bot.store.profile(self.key))
+
     async def test_tag_save_delete_and_stale_revision(self):
         revision = self.bot.store.profile(self.key)["revision"]
         self.request.payload = {
