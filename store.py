@@ -1068,8 +1068,7 @@ class Store:
         return {
             "day": day,
             "used": {
-                row["field"]: {"gain": row["positive"], "loss": row["negative"]}
-                for row in rows
+                row["field"]: {"gain": row["positive"], "loss": row["negative"]} for row in rows
             },
         }
 

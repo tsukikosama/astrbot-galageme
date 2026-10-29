@@ -1,7 +1,7 @@
 name: astrbot_plugin_relationship_memory
 display_name: 关系成长与记忆
 desc: 保留基础人设，以独立关系、共同记忆和概率主动互动，让QQ群中的相处方式自然成长。
-version: v0.2.2
+version: v0.2.3
 author: tsukikosama
 repo: https://github.com/tsukikosama/astrbot-galageme
 support_platforms:

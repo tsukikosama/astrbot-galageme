@@ -566,7 +566,9 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
             replies[event.user] = query.sent[0]
         # No model call, no relationship change, and each user only sees their own number.
         self.assertEqual(len(self.context.calls), calls)
-        own = {u: self.bot.store.profile(self.bot._key(Event(user=u)))["affection"] for u in replies}
+        own = {
+            u: self.bot.store.profile(self.bot._key(Event(user=u)))["affection"] for u in replies
+        }
         self.assertNotEqual(own["10001"], own["10002"])
         for user, reply in replies.items():
             self.assertIn(f"{own[user]} / 100", reply)

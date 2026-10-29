@@ -237,9 +237,7 @@ class Main(Star):
         )
         request_revision = self.store.profile(key)["revision"]
         command = natural_control(event.message_str)
-        if command and command[0] == "affection" and not self._get(
-            "affection_query_enabled", True
-        ):
+        if command and command[0] == "affection" and not self._get("affection_query_enabled", True):
             # Query disabled: let the model answer normally instead of reporting numbers.
             command = None
         if command:
