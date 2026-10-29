@@ -70,6 +70,56 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(self.store.profile("g1:u1")["familiarity"], 6)
         self.assertEqual(len(self.store.audit("g1:u1")), 6)
 
+    def test_daily_limits_are_configurable_and_zero_disables_them(self):
+        base = 1_800_000_000
+        day = datetime.fromtimestamp(base, timezone(timedelta(hours=8))).strftime("%Y-%m-%d")
+        # No limits passed: the historical +8/day ceiling still applies.
+        for i in range(5):
+            self.store.commit_turn("g1:u1", f"d{i}", f"default {i}", "x", self.analysis(), base + i)
+        self.assertEqual(self.store.profile("g1:u1")["affection"], 28)
+        # A tighter configured cap wins over the default, per user and per day.
+        for i in range(5):
+            self.store.commit_turn(
+                "g1:u2",
+                f"c{i}",
+                f"capped {i}",
+                "x",
+                self.analysis(),
+                base + i,
+                limits={"affection_gain": 2, "dimension_gain": 1},
+            )
+        capped = self.store.profile("g1:u2")
+        self.assertEqual(capped["affection"], 22)
+        self.assertEqual(capped["trust"], 11)  # starts at 10, +1/day instead of +2
+        self.assertEqual(self.store.daily_usage("g1:u2", day)["used"]["affection"]["gain"], 2)
+        # 0 disables the cap for that side: every requested point lands.
+        self.store.ensure_profile("g1:u3", "g1", "u3", "group:g1:u3")
+        for i in range(5):
+            self.store.commit_turn(
+                "g1:u3",
+                f"u{i}",
+                f"unlimited {i}",
+                "x",
+                self.analysis(),
+                base + i,
+                limits={"affection_gain": 0, "dimension_gain": 0},
+            )
+        self.assertEqual(self.store.profile("g1:u3")["affection"], 35)
+        self.assertEqual(self.store.daily_usage("g1:u3", day)["used"]["affection"]["gain"], 15)
+        # Unknown keys are ignored so a typo can never silently disable a cap.
+        self.store.ensure_profile("g1:u4", "g1", "u4", "group:g1:u4")
+        for i in range(5):
+            self.store.commit_turn(
+                "g1:u4",
+                f"x{i}",
+                f"typo {i}",
+                "x",
+                self.analysis(),
+                base + i,
+                limits={"affection_gain": 2, "nonsense": 0},
+            )
+        self.assertEqual(self.store.profile("g1:u4")["affection"], 22)
+
     def test_daily_negative_cap(self):
         t = 1_800_000_000
         for i in range(5):

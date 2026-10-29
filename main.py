@@ -21,10 +21,14 @@ from . import prompts
 from .dashboard import Dashboard
 from .isolation import scoped_parts
 from .policy import (
+    DEFAULT_DAILY_LIMITS,
+    DIMENSIONS,
     STABLE_RULES,
     TZ,
+    affection_report,
     clean_memories,
     clean_tags,
+    level_label,
     natural_control,
     number,
     parse_json,
@@ -70,6 +74,17 @@ class Main(Star):
 
     def _get(self, name, default):
         return self.config.get(name, default)
+
+    def _daily_limits(self):
+        """Per-user daily change budget; 0 (or a blank value) means no limit."""
+        limits = {}
+        for name in DEFAULT_DAILY_LIMITS:
+            raw = self._get(f"daily_{name}", DEFAULT_DAILY_LIMITS[name])
+            try:
+                limits[name] = max(0, int(float(raw)))
+            except (TypeError, ValueError):
+                limits[name] = DEFAULT_DAILY_LIMITS[name]
+        return limits
 
     def _lock(self, key):
         if key not in self._locks:
@@ -153,6 +168,13 @@ class Main(Star):
             elif action == "forget":
                 count = self.store.forget(key, arg)
                 reply = f"已清理匹配的记忆（{count}条），并清理关联的对话、摘要、相处描述与待跟进事项，避免旧内容再次整理回来。关系数值保留。"
+            elif action == "affection":
+                scope = self._get("affection_query_scope", "affection")
+                reply = affection_report(
+                    self.store.profile(key),
+                    scope=scope if scope == "all" else "affection",
+                    show_number=bool(self._get("affection_query_show_number", True)),
+                )
             elif action == "show":
                 public = [
                     m["content"] for m in self.store.memories(key, limit=30) if m.get("public")
@@ -215,6 +237,11 @@ class Main(Star):
         )
         request_revision = self.store.profile(key)["revision"]
         command = natural_control(event.message_str)
+        if command and command[0] == "affection" and not self._get(
+            "affection_query_enabled", True
+        ):
+            # Query disabled: let the model answer normally instead of reporting numbers.
+            command = None
         if command:
             await self._control(event, key, command)
             return
@@ -323,6 +350,11 @@ class Main(Star):
             dynamic["current_interaction_impression"] = analysis["reason"]
             dynamic["current_emotion"] = analysis["emotion"]
         req.system_prompt += "\n\n" + STABLE_RULES
+        if self._get("affection_query_enabled", True):
+            req.system_prompt += (
+                "\n用户询问好感度等关系数值时，请他发送“查看好感度”，由插件给出当前真实数值；"
+                "不要自己编造、估算或声称修改数值。"
+            )
         req.system_prompt += (
             "\n当前互动对象QQ："
             + str(event.get_sender_id())
@@ -401,6 +433,7 @@ class Main(Star):
                 pending["user_text"],
                 pending["assistant"],
                 pending["analysis"],
+                limits=self._daily_limits(),
             )
             pending["committed"] = True
 
@@ -441,6 +474,11 @@ class Main(Star):
                         "proactive_enabled",
                     )
                 }
+                result["levels"] = {k: level_label(profile[k]) for k in DIMENSIONS}
+                result["daily_limits"] = self._daily_limits()
+                result["daily_usage"] = self.store.daily_usage(
+                    key, datetime.fromtimestamp(time.time(), TZ).strftime("%Y-%m-%d")
+                )
                 result["recent_changes"] = self.store.audit(key, 5)
                 reply = json.dumps(result, ensure_ascii=False, indent=2)
             elif action in {"暂停", "恢复"}:

@@ -13,6 +13,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from .policy import DEFAULT_DAILY_LIMITS, daily_allowance
+
 UTC8 = timezone(timedelta(hours=8))
 SCORE_FIELDS = ("affection", "trust", "familiarity", "closeness")
 TAG_CATEGORIES = {"interest", "preference", "communication", "boundary", "impression"}
@@ -408,8 +410,12 @@ class Store:
         assistant_text: str,
         analysis: dict,
         now: float | None = None,
+        limits: dict[str, Any] | None = None,
     ) -> bool:
         now = now if now is not None else time.time()
+        budget = dict(DEFAULT_DAILY_LIMITS)
+        if isinstance(limits, dict):
+            budget.update({k: v for k, v in limits.items() if k in DEFAULT_DAILY_LIMITS})
         mid = _clip(message_id, 256)
         fingerprint = hashlib.sha256(_clip(user_text, 12000).encode("utf-8")).hexdigest()
         with self._transaction():
@@ -497,15 +503,25 @@ class Store:
                             (key, day, field),
                         ).fetchone()
                         pos, neg = (row[0], row[1]) if row else (0, 0)
+                        if field == "affection":
+                            gain_cap, loss_cap = (
+                                budget["affection_gain"],
+                                budget["affection_loss"],
+                            )
+                        else:
+                            gain_cap, loss_cap = (
+                                budget["dimension_gain"],
+                                budget["dimension_loss"],
+                            )
                         if requested > 0:
-                            applied = min(requested, 8 - pos)
+                            applied = daily_allowance(requested, pos, gain_cap)
                             if applied > 0:
                                 self.db.execute(
                                     "INSERT INTO daily_deltas(key,day,field,positive,negative) VALUES(?,?,?,?,0) ON CONFLICT(key,day,field) DO UPDATE SET positive=positive+excluded.positive",
                                     (key, day, field, applied),
                                 )
                         elif requested < 0:
-                            applied = -min(-requested, 10 - neg)
+                            applied = daily_allowance(requested, neg, loss_cap)
                             if applied < 0:
                                 self.db.execute(
                                     "INSERT INTO daily_deltas(key,day,field,positive,negative) VALUES(?,?,?,0,?) ON CONFLICT(key,day,field) DO UPDATE SET negative=negative+excluded.negative",
@@ -1042,6 +1058,20 @@ class Store:
                 (before,),
             ).rowcount
         return a + b
+
+    def daily_usage(self, key: str, day: str) -> dict:
+        """Return the per-field change already consumed on ``day`` (YYYY-MM-DD)."""
+        rows = self.db.execute(
+            "SELECT field,positive,negative FROM daily_deltas WHERE key=? AND day=?",
+            (key, day),
+        ).fetchall()
+        return {
+            "day": day,
+            "used": {
+                row["field"]: {"gain": row["positive"], "loss": row["negative"]}
+                for row in rows
+            },
+        }
 
     def audit(self, key: str, limit: int = 10) -> list[dict]:
         rows = self.db.execute(

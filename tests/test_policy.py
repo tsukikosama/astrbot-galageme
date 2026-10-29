@@ -5,8 +5,15 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from policy import (
+    LEVEL_BANDS,
     TZ,
+    affection_level,
+    affection_query,
+    affection_report,
     clean_tags,
+    daily_allowance,
+    level_label,
+    level_of,
     natural_control,
     parse_json,
     proactive_probability,
@@ -92,3 +99,103 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(parse_json('```json\n{"a":1}\n```'), {"a": 1})
         with self.assertRaises(ValueError):
             parse_json("[]")
+
+    def test_affection_query_matches_only_whole_lookup(self):
+        for message in (
+            "查看好感度",
+            "查询好感度",
+            "查看我的好感度",
+            "我的好感度",
+            "好感度多少",
+            "好感度是多少？",
+            "看一下好感度。",
+            "帮我查一下好感度",
+            "现在好感度多少了",
+        ):
+            self.assertEqual(natural_control(message), ("affection", ""), message)
+        for message in (
+            "把好感度改成100",
+            "好感度怎么才能提升",
+            "他说‘查看好感度’是什么意思",
+            "查看他的好感度",
+            "好感度降低会怎样",
+            "",
+        ):
+            self.assertIsNone(natural_control(message), message)
+        self.assertFalse(affection_query("好感"))
+
+    def test_affection_report_is_readonly_and_self_scoped(self):
+        profile = {
+            "affection": 42,
+            "trust": 30,
+            "familiarity": 18,
+            "closeness": 12,
+            "last_interaction": 1000,
+        }
+        single = affection_report(profile)
+        self.assertIn("42 / 100", single)
+        self.assertNotIn("信任", single)
+        all_dimensions = affection_report(profile, scope="all")
+        for label in ("好感 42", "信任 30", "熟悉 18", "亲近 12"):
+            self.assertIn(label, all_dimensions)
+        words_only = affection_report(profile, show_number=False)
+        self.assertNotIn("42", words_only)
+        self.assertIn(affection_level(42), words_only)
+        # Never out of range, and a brand new profile is described as untouched.
+        self.assertIn("100 / 100", affection_report({"affection": 999, "last_interaction": 1}))
+        self.assertIn("0 / 100", affection_report({"affection": -50, "last_interaction": 1}))
+        self.assertIn("还没真正聊过", affection_report({"affection": 20}))
+        self.assertEqual(affection_level(0), "还不太熟，先多聊聊吧")
+        self.assertEqual(affection_level(90), "和你相处很放松，也很愿意继续聊下去")
+
+    def test_scores_are_quantised_into_levels(self):
+        expected = [
+            (0, 1, "陌生"),
+            (24, 1, "陌生"),
+            (25, 2, "认识"),
+            (39, 2, "认识"),
+            (40, 3, "熟悉"),
+            (54, 3, "熟悉"),
+            (55, 4, "朋友"),
+            (69, 4, "朋友"),
+            (70, 5, "亲密"),
+            (84, 5, "亲密"),
+            (85, 6, "羁绊"),
+            (100, 6, "羁绊"),
+        ]
+        for score, index, name in expected:
+            band = level_of(score)
+            self.assertEqual(band["level"], index, score)
+            self.assertEqual(band["name"], name, score)
+            self.assertEqual(level_label(score), f"Lv.{index} {name}")
+            self.assertTrue(band["description"])
+        # Out-of-range input is clamped before quantising, never a new level.
+        self.assertEqual(level_of(-5)["level"], 1)
+        self.assertEqual(level_of(120)["level"], 6)
+        # Bands are contiguous, descending and cover the whole 0-100 range.
+        thresholds = [band[0] for band in LEVEL_BANDS]
+        self.assertEqual(thresholds, sorted(thresholds, reverse=True))
+        self.assertEqual(thresholds[-1], 0)
+        self.assertEqual([band[1] for band in LEVEL_BANDS], [6, 5, 4, 3, 2, 1])
+        self.assertEqual(len({band[2] for band in LEVEL_BANDS}), len(LEVEL_BANDS))
+        # The report carries the level, and words-only mode keeps the level name.
+        profile = {"affection": 42, "last_interaction": 1000}
+        self.assertIn("Lv.3 熟悉", affection_report(profile))
+        words_only = affection_report(profile, show_number=False)
+        self.assertIn("熟悉", words_only)
+        self.assertNotIn("Lv.3", words_only)
+
+    def test_daily_allowance_zero_means_unlimited(self):
+        self.assertEqual(daily_allowance(3, 0, 8), 3)
+        self.assertEqual(daily_allowance(3, 6, 8), 2)  # only 2 left today
+        self.assertEqual(daily_allowance(3, 8, 8), 0)  # budget exhausted
+        self.assertEqual(daily_allowance(0, 0, 8), 0)
+        self.assertEqual(daily_allowance(-3, 0, 10), -3)
+        self.assertEqual(daily_allowance(-3, 9, 10), -1)
+        self.assertEqual(daily_allowance(-3, 10, 10), 0)
+        # 0 (and unset/invalid values) disable the cap for that side.
+        self.assertEqual(daily_allowance(3, 99, 0), 3)
+        self.assertEqual(daily_allowance(-3, 99, 0), -3)
+        self.assertEqual(daily_allowance(3, 99, None), 3)
+        self.assertEqual(daily_allowance(3, 99, "bad"), 3)
+        self.assertEqual(daily_allowance(3, 99, -1), 3)

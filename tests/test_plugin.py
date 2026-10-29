@@ -534,6 +534,70 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(profile["proactive_enabled"])
         self.assertEqual(self.bot.store.recent(self.bot._key(event)), [])
 
+    async def test_affection_query_answers_from_store_without_model_or_score_change(self):
+        first = Event()
+        await self.bot.on_request(first, self.request())
+        await self.finish(first)
+        second = Event(user="10002", message="很高兴认识你")
+        await self.bot.on_request(second, self.request())
+        await self.finish(second)
+        # Give the two users different scores so a crossed reply is detectable.
+        self.bot.store.commit_turn(
+            self.bot._key(first),
+            "extra",
+            "再聊一句",
+            "好呀",
+            plugin.validate_analysis({"confidence": 0.9, "deltas": {"affection": 2}}, 0),
+        )
+        normal = Event(mid="normal")
+        normal_request = self.request()
+        await self.bot.on_request(normal, normal_request)
+        await self.finish(normal)
+        self.assertIn("发送“查看好感度”", normal_request.system_prompt)
+        calls = len(self.context.calls)
+        replies = {}
+        for event in (first, second):
+            query = Event(user=event.user, message="查看好感度", mid="q-" + event.user)
+            request = self.request()
+            await self.bot.on_request(query, request)
+            self.assertTrue(query.stopped)
+            self.assertEqual(len(query.sent), 1)
+            self.assertIsNone(query.get_extra("relationship_pending"))
+            replies[event.user] = query.sent[0]
+        # No model call, no relationship change, and each user only sees their own number.
+        self.assertEqual(len(self.context.calls), calls)
+        own = {u: self.bot.store.profile(self.bot._key(Event(user=u)))["affection"] for u in replies}
+        self.assertNotEqual(own["10001"], own["10002"])
+        for user, reply in replies.items():
+            self.assertIn(f"{own[user]} / 100", reply)
+        self.assertNotIn(f"{own['10001']} / 100", replies["10002"])
+        self.assertEqual(self.bot.store.profile(self.bot._key(first))["affection"], own["10001"])
+        # A query is not an interaction: it must not be stored or settled as a turn.
+        self.assertNotIn(
+            "查看好感度", [t["user_text"] for t in self.bot.store.recent(self.bot._key(first))]
+        )
+
+    async def test_affection_query_disabled_keeps_normal_model_reply(self):
+        self.config["affection_query_enabled"] = False
+        event = Event(message="查看好感度")
+        request = self.request()
+        await self.bot.on_request(event, request)
+        self.assertFalse(event.stopped)
+        self.assertEqual(event.sent, [])
+        self.assertIsNotNone(event.get_extra("relationship_pending"))
+        self.assertNotIn("由插件给出当前真实数值", request.system_prompt)
+
+    async def test_daily_limits_follow_config_and_zero_is_preserved(self):
+        self.assertEqual(self.bot._daily_limits()["affection_gain"], 8)
+        self.config["daily_affection_gain"] = 2
+        self.assertEqual(self.bot._daily_limits()["affection_gain"], 2)
+        self.config["daily_affection_gain"] = 0
+        limits = self.bot._daily_limits()
+        self.assertEqual(limits["affection_gain"], 0)  # 0 is a real value: no limit
+        self.assertEqual(limits["affection_loss"], 10)
+        self.config["daily_affection_gain"] = "oops"
+        self.assertEqual(self.bot._daily_limits()["affection_gain"], 8)
+
     async def test_analysis_does_not_use_other_users_history(self):
         first = Event(user="10001")
         await self.bot.on_request(first, self.request())
